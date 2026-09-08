@@ -23,7 +23,7 @@ run-log.txt.*
 # 내 PC 에서 허용한 권한 목록. 사람마다 다르므로 공유 의미가 없다.
 # CLAUDE.md 와 .claude/ 의 나머지는 같이 보는 문서라서 일부러 제외하지 않는다.
 .claude/settings.local.json
-CLAUDE.local.md
+CLAUDE.md
 
 # ── Windows 잡동사니 ─────────────────────────────────────────────────────────
 Thumbs.db
