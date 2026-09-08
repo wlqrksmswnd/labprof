@@ -20,12 +20,13 @@ run-log.txt.*
 *.bat.bak
 
 # ── 개인 설정 ────────────────────────────────────────────────────────────────
-# 내 PC 에서 허용한 권한 목록. 사람마다 다르므로 공유 의미가 없다.
-# CLAUDE.md 와 .claude/ 의 나머지는 같이 보는 문서라서 일부러 제외하지 않는다.
+# settings.local.json: 내 PC 에서 허용한 권한 목록. 사람마다 다르므로 공유 의미가 없다.
+# CLAUDE.md: 이 저장소는 공개다. AI 작업 지침은 로컬에만 두기로 했다 (커밋 6b02c35).
+#            파일 자체는 각자 폴더에 남아 있고, 실수로 다시 add 되는 것만 막는다.
 .claude/settings.local.json
+CLAUDE.md
 CLAUDE.local.md
 
 # ── Windows 잡동사니 ─────────────────────────────────────────────────────────
 Thumbs.db
 desktop.ini
-CLAUDE.md
