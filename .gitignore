@@ -24,7 +24,6 @@ run-log.txt.*
 # CLAUDE.md: 이 저장소는 공개다. AI 작업 지침은 로컬에만 두기로 했다 (커밋 6b02c35).
 #            파일 자체는 각자 폴더에 남아 있고, 실수로 다시 add 되는 것만 막는다.
 .claude/settings.local.json
-CLAUDE.md
 CLAUDE.local.md
 
 # ── Windows 잡동사니 ─────────────────────────────────────────────────────────
