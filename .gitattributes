@@ -1,0 +1,18 @@
+# 이 저장소의 .ps1 / .bat 은 UTF-8 BOM + CRLF 로 저장되어야 한다.
+# 이유: Windows PowerShell 5.1 은 BOM 이 없는 파일을 시스템 ANSI(한국어 Windows 면
+# CP949)로 읽어서 모든 한글 문자열이 깨진다. .bat 은 LF 만 있으면 cmd 가 마지막 줄이나
+# 블록을 잘못 읽는 경우가 있다. 자세한 내용은 CLAUDE.md 의 인코딩 항목.
+#
+# -text 는 "git 이 줄바꿈을 변환하지 않는다" 는 뜻이다. 커밋된 바이트가 그대로
+# 저장되고 그대로 체크아웃된다 - 받는 사람의 core.autocrlf 설정이나 OS 와 무관하고,
+# GitHub 에서 ZIP 으로 내려받아도 CRLF 가 유지된다. eol=crlf 대신 이것을 쓰는 이유다.
+*.ps1 -text
+*.bat -text
+
+# 문서와 설정은 평범한 텍스트로 취급한다 (저장소에는 LF).
+*.md   text=auto
+*.json text=auto
+
+# 컨테이너는 .gitignore 로 이미 막혀 있지만, 실수로 -f 로 add 하더라도
+# 절대 텍스트로 변환되지 않도록 못 박아 둔다.
+*.enc binary
