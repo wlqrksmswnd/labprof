@@ -73,9 +73,15 @@ Four layers, dot-sourced bottom-up, plus a small logging helper alongside them:
   never echo one for "confirmation".
 - **`lab-profile.ps1`** — thin front end: guard, pick slot, prompt, open, launch, wait, save, wipe.
   Branches on whether the chosen container exists (setup mode vs normal mode). `change-password.ps1`
-  and `collect-env.ps1` are siblings. The `.bat` files are `-ExecutionPolicy Bypass` launchers using
-  `%~dp0` (and pass `%*` through, so `start.bat hong` skips the menu) so the folder can be moved to
-  `D:` intact.
+  and `collect-env.ps1` are siblings, and `unblock.ps1` is a fourth: a one-shot `Unblock-File` sweep
+  of the folder, run once after copying to `D:`, because a GitHub ZIP leaves `Zone.Identifier` on
+  every file and Windows then shows a warning dialog *before* `powershell.exe` starts — nothing our
+  code can catch or log. `collect-env.ps1` records `BlockedFiles` so a recurrence proves the cause
+  is AV/policy instead, which is an administrator's exception to grant, not a thing to code around.
+  The `.bat` files are `-ExecutionPolicy Bypass` launchers using `%~dp0` (and pass `%*` through, so
+  `start.bat hong` skips the menu) so the folder can be moved to `D:` intact. Each appends stderr to
+  `boot-error.txt` and deletes it again when it is empty, so its mere existence means PowerShell
+  died before `Start-LPLog` — the one window `run-log.txt` cannot cover.
 
 Container format (`LP_HeaderSize` = 44):
 
@@ -98,6 +104,13 @@ rewrite a `.ps1`, re-apply both:
 printf '\xEF\xBB\xBF' > .bom.tmp && cat file.ps1 >> .bom.tmp && mv .bom.tmp file.ps1
 perl -pi -e 's/\r?\n$/\r\n/' file.ps1
 ```
+
+**`.bat` files must be pure ASCII — including `rem` comments.** Korean (UTF-8 multibyte) bytes in a
+`.bat` do not merely print as mojibake on a CP949 console: `cmd.exe` mis-tracks its read offset and
+**swallows the following line.** Measured: a file whose `echo 한글출력테스트` was followed by
+`exit /b 7` printed both on one line and returned exit code 0. So every Korean string lives in a
+`.ps1` (UTF-8 BOM, which PS 5.1 reads correctly) and the `.bat` stays a thin launcher — that is why
+`unblock.bat` exists as a launcher for `unblock.ps1` rather than a single `-Command` one-liner.
 
 **`Rfc2898DeriveBytes` defaults to SHA1.** Always pass
 `[Security.Cryptography.HashAlgorithmName]::SHA256` explicitly.
@@ -162,6 +175,12 @@ this entire design is worthless. `collect-env.ps1` exists to measure that empiri
 reboot, run it again, compare `SID` and `UserDpapiKeys` in `env-log.txt`. Snapshot-restore labs pass;
 profile-regeneration labs do not, and `README.md` documents the fallbacks (KeePassXC + TOTP, FIDO2
 key). Do not build features that assume the answer.
+
+**Measured 2026-09-09 on `PC09-13`** (Windows 11 Education, Chrome 138.0.7204.50, PS 5.1.26100.4202):
+`SID` and `UserDpapiKeys` identical across a reboot, and a full shutdown followed by `start.bat`
+reopened Chrome still logged into Google. That PC is snapshot-restore, so the design holds there.
+This is one machine, not a property of the lab — any other seat or PC has to be measured the same
+way before relying on it (`CHECKLIST.md` ends with that instruction).
 
 Chrome 127+ also adds App-Bound Encryption (`app_bound_encrypted_key`, `v20` cookies), validated by
 the Elevation Service against the *calling binary's* path — not the profile path — so relocating the

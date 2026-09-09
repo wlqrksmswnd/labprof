@@ -23,12 +23,79 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'crypto.ps1')
-. (Join-Path $PSScriptRoot 'profile-lib.ps1')
-. (Join-Path $PSScriptRoot 'slots.ps1')
-. (Join-Path $PSScriptRoot 'log.ps1')
+function Write-LPBootError {
+    <#
+      Start-LPLog 보다 앞선 구간의 오류를 run-log.txt 에 직접 붙여 쓴다.
 
-$WorkDir = Join-Path $env:LOCALAPPDATA 'Temp\lp'   # 짧게 유지한다. Chrome 은 긴 경로에서 문제를 일으킨 적이 있다.
+      그 구간에서 죽으면 transcript 가 아직 없다. 화면에만 뜨고 창을 닫으면 그걸로
+      끝이며, C: 는 종료할 때 초기화되니 증거가 영구히 사라진다. 그래서 log.ps1 을
+      거치지 않고 .NET 으로 직접 쓴다 - log.ps1 자체를 못 불러온 경우가 여기에
+      포함되기 때문이다. 같은 이유로 이 함수는 공용 파일에 둘 수 없고,
+      change-password.ps1 에 한 벌 더 있다 (공용 파일에 두면 그 파일이 없을 때 못 쓴다).
+
+      이 함수는 예외를 내지 않는다. 기록에 실패하는 것이 원래 오류 안내를 막아서는 안 된다.
+    #>
+    param([Parameter(Mandatory)][string]$Message)
+
+    Write-Host ''
+    Write-Host $Message -ForegroundColor Red
+    Write-Host ''
+
+    $logPath = Join-Path $PSScriptRoot 'run-log.txt'
+    try {
+        $text = "`r`n[boot-error] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`r`n$Message`r`n"
+        if (Test-Path -LiteralPath $logPath) {
+            [System.IO.File]::AppendAllText($logPath, $text, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        else {
+            # 새로 만들 때는 BOM 을 붙인다. log.ps1 은 BOM 없는 파일을 발견하면 한 세대
+            # 밀어 버리고, 메모장도 BOM 이 없으면 이 파일을 CP949 로 읽어 한글이 깨진다.
+            [System.IO.File]::WriteAllText($logPath, $text, (New-Object System.Text.UTF8Encoding($true)))
+        }
+        Write-Host "이 내용은 $logPath 에도 남았습니다." -ForegroundColor DarkGray
+    }
+    catch {
+        Write-Host "(run-log.txt 에 남기지 못했습니다: $($_.Exception.Message))" -ForegroundColor DarkGray
+        Write-Host '화면을 사진으로 남겨 두세요.' -ForegroundColor Yellow
+    }
+
+    Write-Host '창을 닫고 한 번 더 실행해 보세요. 그래도 같으면 위 내용을 가져와서 보여 주세요.' -ForegroundColor Yellow
+}
+
+
+# ── 라이브러리 로드 ──────────────────────────────────────────────────────────
+# 여기는 Start-LPLog 보다 앞이라 transcript 가 없는 구간이다. 아래 두 가드가 그 구간을
+# D: 에 남긴다. (창이 뜨기도 전에 Windows 가 실행을 막는 경우는 이것으로도 못 잡는다 -
+#  그건 unblock.bat 과 collect-env 의 BlockedFiles 쪽 문제다.)
+#
+# 먼저 파일이 다 있는지 본다. 폴더를 D: 로 복사하다 중간에 끊긴 경우가 실제로 이 모양으로
+# 나타나므로, 어느 파일이 없는지 이름을 대야 사용자가 다시 복사할 수 있다.
+# 이 목록이 곧 로드 순서다 (아래에서 위로: crypto -> profile-lib -> slots).
+$LibFiles = @('crypto.ps1', 'profile-lib.ps1', 'slots.ps1', 'log.ps1')
+
+$missingLibs = @(
+    $LibFiles | Where-Object {
+        $p = Join-Path $PSScriptRoot $_
+        (-not (Test-Path -LiteralPath $p -PathType Leaf)) -or ((Get-Item -LiteralPath $p).Length -eq 0)
+    }
+)
+if ($missingLibs.Count -gt 0) {
+    Write-LPBootError ("필요한 파일이 없거나 비어 있습니다: $($missingLibs -join ', ')`r`n" +
+                       '폴더 전체를 D: 로 다시 복사하세요.')
+    exit 1
+}
+
+try {
+    foreach ($lib in $LibFiles) { . (Join-Path $PSScriptRoot $lib) }
+
+    $WorkDir = Join-Path $env:LOCALAPPDATA 'Temp\lp'   # 짧게 유지한다. Chrome 은 긴 경로에서 문제를 일으킨 적이 있다.
+}
+catch {
+    # 문법 오류(BOM 이 깨져 CP949 로 읽힌 경우가 대표적)도 여기서 잡힌다.
+    Write-LPBootError ("스크립트를 불러오는 중 오류가 났습니다.`r`n" +
+                       "$($_.Exception.Message)`r`n$($_.ScriptStackTrace)")
+    exit 1
+}
 
 # 첫 출력보다 먼저 시작해야 화면에 나온 것이 전부 파일에도 남는다.
 [void](Start-LPLog -Root $PSScriptRoot -Tag 'start')

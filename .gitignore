@@ -9,11 +9,13 @@ profile-*.enc.bak
 profile-*.enc.tmp
 
 # ── 로그 ─────────────────────────────────────────────────────────────────────
-# env-log.txt: 그 PC 의 SID 와 DPAPI 키 GUID (기기 식별자)
-# run-log.txt: 비밀번호는 없지만 누가 언제 어떤 슬롯을 열었는지가 남는다
+# env-log.txt:   그 PC 의 SID 와 DPAPI 키 GUID (기기 식별자)
+# run-log.txt:   비밀번호는 없지만 누가 언제 어떤 슬롯을 열었는지가 남는다
+# boot-error.txt: .bat 이 받아 적은 stderr 원문. 그 PC 의 경로가 그대로 들어 있다.
 env-log.txt
 run-log.txt
 run-log.txt.*
+boot-error.txt
 
 # ── 그 자리에서 고칠 때 만든 사본 (CHECKLIST.md "스크립트를 그 자리에서 고칠 때") ──
 *.ps1.bak
@@ -21,8 +23,6 @@ run-log.txt.*
 
 # ── 개인 설정 ────────────────────────────────────────────────────────────────
 # settings.local.json: 내 PC 에서 허용한 권한 목록. 사람마다 다르므로 공유 의미가 없다.
-# CLAUDE.md: 이 저장소는 공개다. AI 작업 지침은 로컬에만 두기로 했다 (커밋 6b02c35).
-#            파일 자체는 각자 폴더에 남아 있고, 실수로 다시 add 되는 것만 막는다.
 .claude/settings.local.json
 CLAUDE.local.md
 

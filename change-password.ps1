@@ -22,9 +22,63 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-. (Join-Path $PSScriptRoot 'crypto.ps1')
-. (Join-Path $PSScriptRoot 'slots.ps1')
-. (Join-Path $PSScriptRoot 'log.ps1')
+function Write-LPBootError {
+    <#
+      Start-LPLog 보다 앞선 구간의 오류를 run-log.txt 에 직접 붙여 쓴다.
+      lab-profile.ps1 에 같은 함수가 있다 - 왜 공용 파일로 못 빼는지는 그쪽 주석 참고.
+      (요약: log.ps1 을 못 불러온 경우가 이 함수가 필요한 경우에 포함된다.)
+    #>
+    param([Parameter(Mandatory)][string]$Message)
+
+    Write-Host ''
+    Write-Host $Message -ForegroundColor Red
+    Write-Host ''
+
+    $logPath = Join-Path $PSScriptRoot 'run-log.txt'
+    try {
+        $text = "`r`n[boot-error] $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`r`n$Message`r`n"
+        if (Test-Path -LiteralPath $logPath) {
+            [System.IO.File]::AppendAllText($logPath, $text, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        else {
+            [System.IO.File]::WriteAllText($logPath, $text, (New-Object System.Text.UTF8Encoding($true)))
+        }
+        Write-Host "이 내용은 $logPath 에도 남았습니다." -ForegroundColor DarkGray
+    }
+    catch {
+        Write-Host "(run-log.txt 에 남기지 못했습니다: $($_.Exception.Message))" -ForegroundColor DarkGray
+        Write-Host '화면을 사진으로 남겨 두세요.' -ForegroundColor Yellow
+    }
+
+    Write-Host '창을 닫고 한 번 더 실행해 보세요. 그래도 같으면 위 내용을 가져와서 보여 주세요.' -ForegroundColor Yellow
+}
+
+
+# ── 라이브러리 로드 ──────────────────────────────────────────────────────────
+# lab-profile.ps1 과 같은 가드다 (Start-LPLog 앞 구간을 D: 에 남긴다).
+# profile-lib.ps1 은 일부러 넣지 않는다 - 비밀번호 교체에는 Chrome 코드가 필요 없다.
+$LibFiles = @('crypto.ps1', 'slots.ps1', 'log.ps1')
+
+$missingLibs = @(
+    $LibFiles | Where-Object {
+        $p = Join-Path $PSScriptRoot $_
+        (-not (Test-Path -LiteralPath $p -PathType Leaf)) -or ((Get-Item -LiteralPath $p).Length -eq 0)
+    }
+)
+if ($missingLibs.Count -gt 0) {
+    Write-LPBootError ("필요한 파일이 없거나 비어 있습니다: $($missingLibs -join ', ')`r`n" +
+                       '폴더 전체를 D: 로 다시 복사하세요.')
+    exit 1
+}
+
+try {
+    foreach ($lib in $LibFiles) { . (Join-Path $PSScriptRoot $lib) }
+}
+catch {
+    Write-LPBootError ("스크립트를 불러오는 중 오류가 났습니다.`r`n" +
+                       "$($_.Exception.Message)`r`n$($_.ScriptStackTrace)")
+    exit 1
+}
 
 [void](Start-LPLog -Root $PSScriptRoot -Tag 'change-password')
 
