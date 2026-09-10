@@ -85,6 +85,43 @@ function Test-LPPasswordMatch {
 }
 
 
+function Test-LPPasswordCharset {
+    <#
+      영어 대소문자 + 숫자만으로 되어 있는지 본다. 통과하면 $true, 아니면 $false (던지지 않는다).
+
+      SecureString을 String으로 바꾸지 않고 UTF-8 바이트에서 판정한다. 정규식(-match)을 쓰려면
+      String이 필요하므로 쓰지 않는다 - ConvertTo-LPPasswordBytes 주석에 있는 이유 그대로다.
+
+      바이트로 봐도 판정은 정확하다. ASCII 영숫자는 UTF-8에서 한 바이트로 그대로 나오고,
+      UTF-8은 ASCII가 아닌 문자를 전부 0x80 이상의 바이트로만 표현한다. 그래서
+      "모든 바이트가 0x30-0x39 / 0x41-0x5A / 0x61-0x7A"는 "모든 문자가 영숫자"와 같은 말이다.
+      한글·공백·기호는 물론이고 짝 없는 서로게이트(U+FFFD로 바뀌어 0xEF 0xBF 0xBD)도 걸린다.
+
+      정책 자체는 여기서 강제하지 않는다. 이 함수는 판정만 하고, 거절은 진입점이 한다.
+      New-LPKeySet과 Convert-ContainerPassword가 이 검사를 부르지 않는 것은 의도다 -
+      부르면 옛 비밀번호로 만든 기존 컨테이너를 열 수 없게 된다.
+    #>
+    param([Parameter(Mandatory)][Security.SecureString]$Password)
+
+    $pw = $null
+    try {
+        [byte[]]$pw = ConvertTo-LPPasswordBytes $Password   # 한 글자여도 byte[] 로 유지된다
+        if ($pw.Length -eq 0) { return $false }
+        foreach ($b in $pw) {
+            if (-not (($b -ge 0x30 -and $b -le 0x39) -or
+                      ($b -ge 0x41 -and $b -le 0x5A) -or
+                      ($b -ge 0x61 -and $b -le 0x7A))) { return $false }
+        }
+        return $true
+    }
+    finally {
+        # if ($pw) 로 쓰지 않는다. 원소가 하나이고 그 값이 0이면 배열 전체가 $false로 평가되어
+        # zeroize를 건너뛴다. 여기서는 실제로 한 바이트 비밀번호가 들어올 수 있다.
+        if ($null -ne $pw -and $pw.Length -gt 0) { [Array]::Clear($pw, 0, $pw.Length) }
+    }
+}
+
+
 function New-LPKeySet {
     <#
       비밀번호 + salt -> 암호화 키(32B) + MAC 키(32B)

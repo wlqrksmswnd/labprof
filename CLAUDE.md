@@ -143,6 +143,20 @@ passwords can now actually arrive and the iteration count is the only remaining 
 them. The count lives in the header, so a future change stays backward-compatible — that makes it
 reversible, not a reason to do it.
 
+**The alphanumeric password rule is enforced where a password is *set*, never where one is
+*used*.** `Test-LPPasswordCharset` (in `crypto.ps1`) is called from exactly two places: the setup
+prompt in `lab-profile.ps1` and the *new* password in `change-password.ps1`. Adding it to the open
+prompt, to the old password in `change-password.ps1`, or to `New-LPKeySet` /
+`Convert-ContainerPassword` would permanently lock out every container created before the rule (the
+2nd lab test left one on PC18-18 whose password is not recorded) — and it would remove the only
+migration path, which is `change-password.bat` accepting the unrestricted old password. The
+restriction exists for re-typeability, not strength: `Read-Host -AsSecureString` does not echo, so
+nothing reveals that the IME was on, and setup happily accepts a Korean password twice — the
+failure surfaces a week later as a container that will not open. The check works on the UTF-8 bytes
+because building a managed `String` from the `SecureString` would leave plaintext in memory until
+GC; do not "simplify" it to `-match '^[A-Za-z0-9]+$'`. Since the length floor is also gone,
+`LP_Iterations` is still the only defense left — see below.
+
 **The work dir is shared, so guard it before prompting.** `%LOCALAPPDATA%\Temp\lp` is used by
 whoever runs the script, so `lab-profile.ps1` does three things *before* slot selection and the
 password prompt, in this order: refuse to start if `Get-LPChromeCount` sees a live session (starting

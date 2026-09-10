@@ -213,14 +213,25 @@ try {
         Write-Host '  - Google 계정 비밀번호와 다른 것으로 하세요 (둘은 아무 관계가 없습니다)'
         Write-Host '  - D: 가 공용이면 파일을 복사해 가서 오프라인으로 대입 공격할 수 있습니다.'
         Write-Host '    다른 곳에 쓰지 않는 비밀번호를 쓰세요.'
+        Write-Host '  - 영어 대소문자와 숫자만 쓸 수 있습니다 (한글, 공백, 기호는 안 됩니다)'
         Write-Host ''
 
         # 최소 자릿수 규칙은 없다. 빈 입력만 막는다 - 그건 자릿수 정책이 아니라 입력 실수
         # 방어다. Read-Host 는 에코가 없으므로 Enter 를 한 번 더 누른 것과 "빈 비밀번호를
         # 원한다" 를 구분할 수 없고, 통과시키면 그 컨테이너는 Enter 만으로 열린다.
+        #
+        # 문자 제한도 자릿수 규칙이 아니라 같은 종류의 방어다. 에코가 없어 IME(한/영)가
+        # 켜져 있었는지 알 수 없고, 셋업에서는 두 번 다 같게 들어가 통과해 버린다. 다음
+        # 수업에 같은 키를 눌러도 열리지 않고, 그때 잃는 것은 로그인 상태 전부다.
+        # 확인 입력을 받기 전에 검사한다 - 두 번 다 치게 한 뒤 되돌리면 헛수고가 두 번이다.
         $pw1 = Read-Host '새 비밀번호' -AsSecureString
         if ($pw1.Length -eq 0) {
             Write-Host '아무것도 입력되지 않았습니다. 중단합니다.' -ForegroundColor Red
+            exit 1
+        }
+        if (-not (Test-LPPasswordCharset $pw1)) {
+            Write-Host '영어 대소문자와 숫자만 쓸 수 있습니다 (한글, 공백, 기호는 안 됩니다). 중단합니다.' -ForegroundColor Red
+            Write-Host '한글 입력기(한/영)가 켜져 있지 않은지 확인하세요.' -ForegroundColor Yellow
             exit 1
         }
         $pw2 = Read-Host '새 비밀번호 확인' -AsSecureString

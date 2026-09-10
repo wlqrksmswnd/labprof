@@ -124,6 +124,12 @@ try {
     Write-Host "대상 프로필: $slotName" -ForegroundColor Cyan
     Write-Host ''
 
+    # 새 비밀번호에는 문자 제한이 있고 기존 비밀번호에는 없다. 기존 쪽을 검사하면 한글이나
+    # 기호가 든 비밀번호로 만들어 둔 컨테이너를 열 수 없게 되고, 그러면 그 컨테이너를
+    # 영숫자 비밀번호로 옮길 방법 자체가 사라진다. 이 스크립트가 그 이주 창구다.
+    Write-Host '새 비밀번호는 영어 대소문자와 숫자만 쓸 수 있습니다. 기존 비밀번호는 제한이 없습니다.' -ForegroundColor DarkGray
+    Write-Host ''
+
     # 최소 자릿수 규칙은 없다. 빈 입력만 막는다 (에코가 없어 Enter 오타와 구분할 수 없다).
     $oldPw = Read-Host '기존 비밀번호' -AsSecureString
     if ($oldPw.Length -eq 0) {
@@ -134,6 +140,11 @@ try {
     $new1 = Read-Host '새 비밀번호' -AsSecureString
     if ($new1.Length -eq 0) {
         Write-Host '새 비밀번호에 아무것도 입력되지 않았습니다. 중단합니다.' -ForegroundColor Red
+        exit 1
+    }
+    if (-not (Test-LPPasswordCharset $new1)) {
+        Write-Host '새 비밀번호는 영어 대소문자와 숫자만 쓸 수 있습니다 (한글, 공백, 기호는 안 됩니다).' -ForegroundColor Red
+        Write-Host '아무것도 변경하지 않았습니다. 한글 입력기(한/영)가 켜져 있지 않은지 확인하세요.' -ForegroundColor Yellow
         exit 1
     }
     $new2 = Read-Host '새 비밀번호 확인' -AsSecureString
