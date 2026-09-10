@@ -29,8 +29,16 @@ $script:LP_ChunkSize  = 1MB
 
 
 function ConvertTo-LPPasswordBytes {
-    # SecureString -> UTF-8 바이트. 중간에 관리되는 String을 만들지 않는다.
-    # String으로 바꾸면 GC될 때까지 평문이 메모리에 남고 우리가 지울 수단이 없다.
+    <#
+      SecureString -> UTF-8 바이트. 중간에 관리되는 String을 만들지 않는다.
+      String으로 바꾸면 GC될 때까지 평문이 메모리에 남고 우리가 지울 수단이 없다.
+
+      반환은 반드시 ,$bytes 로 한다. 그냥 반환하면 PowerShell 이 배열을 파이프라인으로
+      풀어 버려서 (a) 결과가 byte[] 가 아니라 object[] 로 재조립되고, (b) 원소가 하나뿐일
+      때는 배열이 아예 사라져 [byte] 하나가 나온다. 그러면 호출부의 $pw.Length 가
+      StrictMode 에서 터진다. "1바이트 비밀번호" 는 ASCII 한 글자를 뜻하므로,
+      최소 자릿수 규칙이 없어진 지금은 실제로 들어올 수 있는 입력이다.
+    #>
     param([Parameter(Mandatory)][Security.SecureString]$Password)
 
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToCoTaskMemUnicode($Password)
@@ -38,7 +46,8 @@ function ConvertTo-LPPasswordBytes {
         $uni = New-Object byte[] ($Password.Length * 2)
         [Runtime.InteropServices.Marshal]::Copy($ptr, $uni, 0, $uni.Length)
         try {
-            return [Text.Encoding]::Convert([Text.Encoding]::Unicode, [Text.Encoding]::UTF8, $uni)
+            $utf8 = [Text.Encoding]::Convert([Text.Encoding]::Unicode, [Text.Encoding]::UTF8, $uni)
+            return ,$utf8
         }
         finally { [Array]::Clear($uni, 0, $uni.Length) }
     }
@@ -63,8 +72,10 @@ function Test-LPPasswordMatch {
 
     $ba = $null; $bb = $null
     try {
-        $ba = ConvertTo-LPPasswordBytes $A
-        $bb = ConvertTo-LPPasswordBytes $B
+        # [byte[]] 로 못 박는다. ConvertTo-LPPasswordBytes 가 이미 배열을 온전히 돌려주지만,
+        # 한 글자 비밀번호에서 조용히 [byte] 하나로 무너지는 일이 여기서 다시 나면 안 된다.
+        [byte[]]$ba = ConvertTo-LPPasswordBytes $A
+        [byte[]]$bb = ConvertTo-LPPasswordBytes $B
         return (Test-LPBytesEqual $ba $bb)
     }
     finally {
@@ -95,7 +106,7 @@ function New-LPKeySet {
         try { $rng.GetBytes($Salt) } finally { $rng.Dispose() }
     }
 
-    $pw = ConvertTo-LPPasswordBytes $Password
+    [byte[]]$pw = ConvertTo-LPPasswordBytes $Password   # 한 글자 비밀번호도 byte[] 로 유지
     try {
         $kdf = New-Object Security.Cryptography.Rfc2898DeriveBytes(
                     $pw, $Salt, $Iterations, [Security.Cryptography.HashAlgorithmName]::SHA256)
@@ -174,7 +185,22 @@ function Get-LPFileMac {
 
 
 function Protect-LPFile {
-    # 파일 하나를 컨테이너로 암호화한다. IV는 매번 새로 만든다.
+    <#
+      파일 하나를 컨테이너로 암호화한다. IV는 매번 새로 만든다.
+
+      MAC은 다 쓴 파일을 되읽지 않고 **쓰는 도중에** 계산한다. HashAlgorithm은
+      ICryptoTransform이고 그 TransformBlock이 입력을 출력 버퍼에 그대로 복사하므로,
+      CryptoStream($out, $hmac, Write)는 바이트를 통과시키면서 HMAC을 누적한다.
+
+      읽기 패스가 하나 사라져서 저장이 빨라지는 것보다 중요한 이유가 있다. 되읽어서
+      계산하면 MAC이 "디스크에서 다시 읽은 바이트"에 걸리므로, 쓰다가 한 바이트가
+      깨져도 그 깨진 바이트 위에 MAC이 씌워지고 직후의 Test-LPContainer까지 통과한다
+      (같은 손상을 다시 읽어 같은 MAC이 나온다). 손상은 다음 수업에 압축을 풀 때야
+      드러난다. 쓰면서 계산하면 MAC은 "쓰려고 한 바이트"에 묶이고, Test-LPContainer의
+      읽기가 비로소 진짜 디스크 왕복 검증이 된다. 순서를 되돌리지 말 것.
+
+      출력 바이트는 되읽던 때와 완전히 같다 (MAC 범위도 헤더+암호문 전체 그대로).
+    #>
     param(
         [Parameter(Mandatory)][string]$InFile,
         [Parameter(Mandatory)][string]$OutFile,
@@ -185,43 +211,55 @@ function Protect-LPFile {
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
     try { $rng.GetBytes($iv) } finally { $rng.Dispose() }
 
-    $aes = [Security.Cryptography.Aes]::Create()
+    $mac  = $null
+    $hmac = [Security.Cryptography.HMACSHA256]::new($KeySet.Mac)
     try {
-        $aes.KeySize = 256
-        $aes.Mode    = [Security.Cryptography.CipherMode]::CBC
-        $aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
-        $aes.Key     = $KeySet.Enc
-        $aes.IV      = $iv
-
-        $out = [IO.File]::Create($OutFile)
+        $aes = [Security.Cryptography.Aes]::Create()
         try {
-            $out.Write($script:LP_Magic, 0, 8)
-            $out.Write([BitConverter]::GetBytes([int]$KeySet.Iterations), 0, 4)
-            $out.Write($KeySet.Salt, 0, $script:LP_SaltSize)
-            $out.Write($iv, 0, $script:LP_IvSize)
+            $aes.KeySize = 256
+            $aes.Mode    = [Security.Cryptography.CipherMode]::CBC
+            $aes.Padding = [Security.Cryptography.PaddingMode]::PKCS7
+            $aes.Key     = $KeySet.Enc
+            $aes.IV      = $iv
 
-            $encryptor = $aes.CreateEncryptor()
+            $out = [IO.File]::Create($OutFile)
             try {
-                $cs = New-Object Security.Cryptography.CryptoStream(
-                            $out, $encryptor, [Security.Cryptography.CryptoStreamMode]::Write)
-                $in = [IO.File]::OpenRead($InFile)
+                # 이 스트림에 쓴 바이트는 $out 으로 그대로 흘러가면서 HMAC에 들어간다.
+                $macStream = New-Object Security.Cryptography.CryptoStream(
+                                $out, $hmac, [Security.Cryptography.CryptoStreamMode]::Write)
                 try {
-                    $buf = New-Object byte[] $script:LP_ChunkSize
-                    while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) { $cs.Write($buf, 0, $n) }
-                    $cs.FlushFinalBlock()
+                    $macStream.Write($script:LP_Magic, 0, 8)
+                    $macStream.Write([BitConverter]::GetBytes([int]$KeySet.Iterations), 0, 4)
+                    $macStream.Write($KeySet.Salt, 0, $script:LP_SaltSize)
+                    $macStream.Write($iv, 0, $script:LP_IvSize)
+
+                    $encryptor = $aes.CreateEncryptor()
+                    try {
+                        $cs = New-Object Security.Cryptography.CryptoStream(
+                                    $macStream, $encryptor, [Security.Cryptography.CryptoStreamMode]::Write)
+                        $in = [IO.File]::OpenRead($InFile)
+                        try {
+                            $buf = New-Object byte[] $script:LP_ChunkSize
+                            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) { $cs.Write($buf, 0, $n) }
+                            $cs.FlushFinalBlock()
+                        }
+                        # 안쪽을 닫으면 $macStream -> $out 까지 연쇄로 닫히고, 그때 HMAC이 확정된다.
+                        finally { $in.Dispose(); $cs.Dispose() }
+                    }
+                    finally { $encryptor.Dispose() }
                 }
-                finally { $in.Dispose(); $cs.Dispose() }   # CryptoStream을 닫으면 $out도 함께 닫힌다
+                finally { $macStream.Dispose() }   # 이미 닫혀 있어도 무해하다
             }
-            finally { $encryptor.Dispose() }
+            finally { $out.Dispose() }
         }
-        finally { $out.Dispose() }
+        finally { $aes.Dispose() }
+
+        # $hmac.Hash 는 FlushFinalBlock 이 돈 뒤에만 값이 있다. 위에서 스트림을 다 닫았으므로 지금은 있다.
+        $mac = $hmac.Hash
     }
-    finally { $aes.Dispose() }
+    finally { $hmac.Dispose() }
 
-    # encrypt-then-MAC: 지금까지 쓴 전부에 MAC을 걸어 뒤에 붙인다.
-    $written = (Get-Item -LiteralPath $OutFile).Length
-    $mac = Get-LPFileMac -Path $OutFile -MacKey $KeySet.Mac -Length $written
-
+    # encrypt-then-MAC: 지금까지 쓴 전부를 덮는 MAC을 뒤에 붙인다.
     $fs = [IO.File]::Open($OutFile, [IO.FileMode]::Append, [IO.FileAccess]::Write)
     try { $fs.Write($mac, 0, $mac.Length) } finally { $fs.Dispose() }
 }

@@ -108,6 +108,23 @@ function Write-Section {
 }
 
 
+# ── 단계별 소요 시간 ────────────────────────────────────────────────────────────
+# 2차 검증 로그(run-log.txt)에는 블록의 시작/끝 시각만 있어서, 31초 중 어디가 느린지
+# 알 수 없었다. 그 안에는 사람이 슬롯을 고르고 비밀번호를 치고 Chrome 을 쓴 시간까지
+# 다 들어 있다. 그래서 각 단계를 직접 재서 마지막에 한 줄로 남긴다 - 다음에 무엇을
+# 줄일지는 추측이 아니라 이 줄로 정한다.
+#
+# StrictMode 가 켜져 있으므로 미리 초기화한다. 실행되지 않은 단계는 $null 로 남고
+# 출력에서 빠진다 (셋업 모드에는 '열기' 가 없다).
+# Measure-Command 는 반환값을 버리므로 쓸 수 없다. Stopwatch 를 하나 만들어 재사용한다.
+$swPhase = [System.Diagnostics.Stopwatch]::new()
+$tKdf    = $null
+$tOpen   = $null
+$tCache  = $null
+$tSave   = $null
+$tWipe   = $null
+
+
 try {
     Write-Section '=== 실습실 Chrome 프로필 ==='
 
@@ -195,12 +212,15 @@ try {
         Write-Host '새 컨테이너 비밀번호를 정하세요.'
         Write-Host '  - Google 계정 비밀번호와 다른 것으로 하세요 (둘은 아무 관계가 없습니다)'
         Write-Host '  - D: 가 공용이면 파일을 복사해 가서 오프라인으로 대입 공격할 수 있습니다.'
-        Write-Host '    12자 이상, 다른 곳에 쓰지 않는 비밀번호를 쓰세요.'
+        Write-Host '    다른 곳에 쓰지 않는 비밀번호를 쓰세요.'
         Write-Host ''
 
+        # 최소 자릿수 규칙은 없다. 빈 입력만 막는다 - 그건 자릿수 정책이 아니라 입력 실수
+        # 방어다. Read-Host 는 에코가 없으므로 Enter 를 한 번 더 누른 것과 "빈 비밀번호를
+        # 원한다" 를 구분할 수 없고, 통과시키면 그 컨테이너는 Enter 만으로 열린다.
         $pw1 = Read-Host '새 비밀번호' -AsSecureString
         if ($pw1.Length -eq 0) {
-            Write-Host '비밀번호가 비어 있습니다. 중단합니다.' -ForegroundColor Red
+            Write-Host '아무것도 입력되지 않았습니다. 중단합니다.' -ForegroundColor Red
             exit 1
         }
         $pw2 = Read-Host '새 비밀번호 확인' -AsSecureString
@@ -209,14 +229,13 @@ try {
             Write-Host '두 비밀번호가 다릅니다. 중단합니다.' -ForegroundColor Red
             exit 1
         }
-        if ($pw1.Length -lt 12) {
-            Write-Host "경고: 비밀번호가 $($pw1.Length)자입니다. 12자 이상을 권합니다." -ForegroundColor Yellow
-        }
 
         $password = $pw1
         Write-Host ''
         Write-Host '키 유도 중... (수 초)'
+        $swPhase.Restart()
         $keys = New-LPKeySet -Password $password          # 새 salt 를 만든다
+        $tKdf = [math]::Round($swPhase.Elapsed.TotalSeconds, 1)
 
         if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
         [void](New-Item -ItemType Directory -Path $WorkDir -Force)
@@ -232,16 +251,22 @@ try {
         Write-Host ''
         $password = Read-Host "'$slotName' 의 컨테이너 비밀번호" -AsSecureString
         if ($password.Length -eq 0) {
-            Write-Host '비밀번호가 비어 있습니다. 중단합니다.' -ForegroundColor Red
+            Write-Host '아무것도 입력되지 않았습니다. 중단합니다.' -ForegroundColor Red
             exit 1
         }
 
         $header = Get-LPContainerHeader -Path $ContainerPath
 
         Write-Host '컨테이너 여는 중... (수 초)'
+        $swPhase.Restart()
         $keys = New-LPKeySet -Password $password -Salt $header.Salt -Iterations $header.Iterations
+        $tKdf = [math]::Round($swPhase.Elapsed.TotalSeconds, 1)
 
-        if (-not (Unprotect-Container -InFile $ContainerPath -DestDir $WorkDir -KeySet $keys -Header $header)) {
+        $swPhase.Restart()
+        $opened = Unprotect-Container -InFile $ContainerPath -DestDir $WorkDir -KeySet $keys -Header $header
+        $tOpen  = [math]::Round($swPhase.Elapsed.TotalSeconds, 1)
+
+        if (-not $opened) {
             Write-Host ''
             Write-Host "'$slotName' 의 비밀번호가 틀렸거나 파일이 손상되었습니다." -ForegroundColor Red
             Write-Host '(다른 사람의 프로필을 고르지 않았는지도 확인하세요.)' -ForegroundColor Yellow
@@ -272,7 +297,62 @@ try {
     $chromeArgs = "--user-data-dir=`"$WorkDir`"" +
                   ' --no-first-run --no-default-browser-check --disable-background-mode'
 
-    Start-Process -FilePath $chrome -ArgumentList $chromeArgs
+    # 경로를 확인한 곳(Find-LPChrome)과 여기 사이에는 슬롯 선택 + 비밀번호 입력 + 키 유도가
+    # 있어서 실제로 20초쯤 벌어진다. 2차 검증에서 그 사이에 Start-Process 가
+    # "지정된 파일을 찾을 수 없습니다" 로 실패했고 28초 뒤 재실행은 성공했다. 부팅 직후는
+    # Google 업데이터가 도는 시간대이고 Chrome 업데이트는 chrome.exe 를 실제로 교체한다 -
+    # 교체되는 순간의 CreateProcess 가 정확히 그 오류다. 그래서 실행 직전에 다시 확인하고,
+    # 한 번만 재시도한다. 재시도는 두 모드 모두 안전하다(컨테이너를 건드리지 않고,
+    # 작업 폴더 상태도 바뀌지 않는다).
+    if (-not (Test-Path -LiteralPath $chrome)) {
+        Write-Host 'chrome.exe 가 방금 사라졌습니다. 다시 찾습니다...' -ForegroundColor Yellow
+        $found = Find-LPChrome
+        if ($found) { $chrome = $found }
+    }
+
+    # -WorkingDirectory 를 준다. 물려받은 현재 폴더가 유효하지 않은 경우도 같은 오류를
+    # 내므로 그 원인을 없앤다. 단, 폴더가 실제로 있을 때만 준다 - 없는 폴더를 주면
+    # Start-Process 가 "WorkingDirectory 매개 변수" 오류를 내면서 진짜 원인(exe 가 없다)을
+    # 가려 버린다. exe 가 정말 사라진 경우가 바로 그 상황이다.
+    $spArgs   = @{ FilePath = $chrome; ArgumentList = $chromeArgs }
+    $chromeDir = Split-Path -Parent $chrome
+    if ($chromeDir -and (Test-Path -LiteralPath $chromeDir -PathType Container)) {
+        $spArgs['WorkingDirectory'] = $chromeDir
+    }
+
+    $launchError = $null
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        try {
+            Start-Process @spArgs
+            $launchError = $null
+            break
+        }
+        catch {
+            $launchError = $_.Exception.Message
+            if ($attempt -eq 1) {
+                Write-Host "Chrome 실행이 실패했습니다. 2초 뒤 한 번 더 시도합니다. ($launchError)" -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+            }
+        }
+    }
+
+    if ($launchError) {
+        Write-Host ''
+        Write-Host 'Chrome 을 실행하지 못했습니다.' -ForegroundColor Red
+        Write-Host "  실행 파일  : $chrome" -ForegroundColor DarkGray
+        Write-Host "  파일 존재  : $(Test-Path -LiteralPath $chrome)" -ForegroundColor DarkGray
+        Write-Host "  오류       : $launchError" -ForegroundColor DarkGray
+        Write-Host ''
+        Write-Host 'Chrome 자동 업데이트와 겹쳤을 수 있습니다. 30초 뒤 다시 실행해 보세요.' -ForegroundColor Yellow
+        if ($isSetup) {
+            Write-Host '컨테이너를 만들지 않고 종료합니다.' -ForegroundColor Red
+        }
+        else {
+            Write-Host '기존 컨테이너를 그대로 두고 종료합니다 (저장하지 않음).' -ForegroundColor Yellow
+        }
+        [void](Remove-LPWorkDir -Path $WorkDir)
+        exit 1
+    }
 
     $launched = Wait-LPChromeExit -Marker $WorkDir
     if (-not $launched) {
@@ -291,13 +371,41 @@ try {
     # ── 저장 ─────────────────────────────────────────────────────────────────
     Write-Section '--- 저장 중 ---'
 
+    $swPhase.Restart()
     $freedMb = Remove-LPProfileCaches -ProfileDir $WorkDir
+    $tCache  = [math]::Round($swPhase.Elapsed.TotalSeconds, 1)
     Write-Host "캐시 정리: ${freedMb}MB 제외"
 
+    # 진단용. 컨테이너에 실려 가는 것이 무엇인지 로그에 남겨, denylist 에 무엇을 더 넣을지를
+    # 실측으로 정한다. 두어 번 판단이 끝나면 이 두 줄은 지워도 된다.
+    $topDirs = @(Get-LPProfileTopDirs -ProfileDir $WorkDir -Top 5)
+    if ($topDirs.Count -gt 0) {
+        Write-Host "남은 큰 폴더: $($topDirs -join ', ')" -ForegroundColor DarkGray
+    }
+
+    $swPhase.Restart()
     $sizeMb = Save-LPContainer -SourceDir $WorkDir -ContainerPath $ContainerPath -KeySet $keys
+    $tSave  = [math]::Round($swPhase.Elapsed.TotalSeconds, 1)
     Write-Host "저장 완료: $(Split-Path -Leaf $ContainerPath) (${sizeMb}MB)" -ForegroundColor Green
 
+    # 파일 수천 개를 지우는 동안 아무 출력이 없으면 멈춘 것처럼 보인다.
+    Write-Host '평문 프로필 정리 중...' -ForegroundColor DarkGray
+    $swPhase.Restart()
     [void](Remove-LPWorkDir -Path $WorkDir)
+    $tWipe = [math]::Round($swPhase.Elapsed.TotalSeconds, 1)
+
+    # 다음 단축 작업의 유일한 입력이다. CHECKLIST.md 가 이 줄을 적어 오라고 지시한다.
+    # {0:0.0} 으로 자리를 고정한다. 2.0 을 "2s" 로 찍으면 로그를 눈으로 비교하기 어렵다.
+    $phases = @()
+    if ($null -ne $tKdf)   { $phases += ('키유도 {0:0.0}s' -f $tKdf) }
+    if ($null -ne $tOpen)  { $phases += ('열기 {0:0.0}s'   -f $tOpen) }
+    if ($null -ne $tCache) { $phases += ('캐시 {0:0.0}s'   -f $tCache) }
+    if ($null -ne $tSave)  { $phases += ('저장 {0:0.0}s'   -f $tSave) }
+    if ($null -ne $tWipe)  { $phases += ('정리 {0:0.0}s'   -f $tWipe) }
+    if ($phases.Count -gt 0) {
+        Write-Host ''
+        Write-Host "[시간] $($phases -join '  ')" -ForegroundColor DarkGray
+    }
 
     Write-Host ''
     Write-Host '끝났습니다. 이제 PC 를 종료해도 됩니다.' -ForegroundColor Green

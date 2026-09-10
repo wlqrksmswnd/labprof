@@ -57,6 +57,65 @@ $script:LP_CacheDirs = @(
 )
 
 
+function Get-LPFullPath {
+    <#
+      상대 경로를 절대 경로로 만든다.
+
+      아래 함수들은 파일이 수천 개인 트리를 다루므로 .NET 파일 API 를 직접 쓴다. 그런데
+      .NET 의 Environment.CurrentDirectory 는 PowerShell 의 현재 위치와 다를 수 있어서,
+      상대 경로를 그대로 넘기면 엉뚱한 폴더를 가리킨다 (지우는 함수에서는 위험하다).
+      그래서 .NET 에 넘기기 전에 한 번 절대 경로로 바꾼다.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    try { return (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath }
+    catch { return $Path }
+}
+
+
+function Get-LPTreeSize {
+    <#
+      트리에 있는 파일 크기의 합(바이트).
+
+      Get-ChildItem -Recurse | Measure-Object 는 파일마다 PSObject 를 만든다. Chrome
+      프로필은 파일이 수천 개라 그것만으로 몇 초가 든다. EnumerateFiles 는 FileInfo 에
+      크기를 이미 담아 돌려주므로 파일당 추가 조회도 없다.
+
+      권한 오류로 순회가 중간에 끊기면 거기까지의 부분 합계를 쓴다. 이 숫자는 화면에
+      "몇 MB 제외" 를 찍기 위한 진단용이므로 정확도보다 비용이 중요하다.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $sum = 0L
+    try {
+        $di = New-Object IO.DirectoryInfo (Get-LPFullPath $Path)
+        foreach ($f in $di.EnumerateFiles('*', [IO.SearchOption]::AllDirectories)) { $sum += $f.Length }
+    }
+    catch { }   # 부분 합계로 계속한다
+
+    return $sum
+}
+
+
+function Remove-LPTree {
+    <#
+      폴더 트리를 지운다. 성공하면 $null, 실패하면 마지막 오류 메시지를 돌려준다.
+
+      [IO.Directory]::Delete 를 먼저 쓰는 이유는 Get-LPTreeSize 와 같다 - Remove-Item
+      -Recurse 는 파일마다 PSObject 를 만든다. 다만 .NET 쪽은 읽기 전용 파일과 260자
+      초과 경로에서 던지므로 Remove-Item 폴백이 반드시 필요하다 (Remove-Item -Force 는
+      읽기 전용 속성을 스스로 지우고, PS 5.1 이 긴 경로를 다르게 처리한다).
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    try { [IO.Directory]::Delete((Get-LPFullPath $Path), $true); return $null }
+    catch { }
+
+    try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop; return $null }
+    catch { return $_.Exception.Message }
+}
+
+
 function Find-LPChrome {
     <#
       chrome.exe 를 찾는다. 못 찾으면 $null.
@@ -101,8 +160,16 @@ function Get-LPChromeCount {
 
       -like 대신 .Contains()를 쓴다. 경로에 [ ] 같은 문자가 있으면 -like가 와일드카드로
       해석해 버린다.
+
+      Get-CimInstance Win32_Process 는 커맨드라인까지 받아오느라 비싸다 (수백 ms ~ 수 초).
+      이 함수는 비밀번호를 묻기도 전에 진행 중 세션 검사로 한 번 돌고, 세션 중에는
+      Wait-LPChromeExit 이 2초마다 부른다. 그래서 chrome.exe 가 아예 없으면 값싼
+      Get-Process 로 먼저 끝낸다 - 프로세스가 하나도 없으면 우리 마커를 가진 프로세스도
+      있을 수 없으므로 판정은 달라지지 않는다.
     #>
     param([Parameter(Mandatory)][string]$Marker)
+
+    if (-not (Get-Process -Name 'chrome' -ErrorAction SilentlyContinue)) { return 0 }
 
     $procs = @(
         Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" -ErrorAction SilentlyContinue |
@@ -160,19 +227,58 @@ function Remove-LPProfileCaches {
         $target = Join-Path $ProfileDir $rel
         if (-not (Test-Path -LiteralPath $target)) { continue }
 
-        try {
-            $size = (Get-ChildItem -LiteralPath $target -Recurse -Force -File -ErrorAction SilentlyContinue |
-                        Measure-Object -Property Length -Sum).Sum
-            if ($size) { $freedBytes += $size }
-            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
-        }
-        catch {
+        $freedBytes += Get-LPTreeSize -Path $target
+
+        $err = Remove-LPTree -Path $target
+        if ($err) {
             # 잠긴 파일 하나 때문에 저장 전체를 실패시킬 이유는 없다. 그냥 같이 압축된다.
-            Write-Verbose "캐시 정리 건너뜀: $rel ($($_.Exception.Message))"
+            Write-Verbose "캐시 정리 건너뜀: $rel ($err)"
         }
     }
 
     return [math]::Round($freedBytes / 1MB, 1)
+}
+
+
+function Get-LPProfileTopDirs {
+    <#
+      캐시 정리 뒤에도 컨테이너에 실려 가는 큰 폴더 상위 N개를 "이름 크기MB" 문자열로 돌려준다.
+
+      진단용이다. LP_CacheDirs 에 무엇을 더 넣어야 저장이 빨라지는지를 추측이 아니라
+      실측으로 정하기 위한 것이다 - 그 목록은 로그인 상태가 걸린 denylist 여서 잘못
+      넣으면 조용히 로그인이 깨진다. 그래서 먼저 로그로 크기를 본다.
+      수업 로그를 두어 번 받아 판단이 끝나면 이 함수와 호출부는 지워도 된다.
+
+      트리를 한 번만 훑고(크기는 FileInfo 에 이미 있다) 상대 경로 앞 두 조각으로 묶는다.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$ProfileDir,
+        [int]$Top = 5
+    )
+
+    $sizes = @{}
+    try {
+        $di  = New-Object IO.DirectoryInfo (Get-LPFullPath $ProfileDir)
+        $cut = $di.FullName.TrimEnd('\').Length + 1
+
+        foreach ($f in $di.EnumerateFiles('*', [IO.SearchOption]::AllDirectories)) {
+            $parts = $f.FullName.Substring($cut).Split('\')
+            if     ($parts.Count -le 1) { $key = '(루트 파일)' }
+            elseif ($parts.Count -eq 2) { $key = $parts[0] }
+            else                        { $key = $parts[0] + '\' + $parts[1] }
+
+            if ($sizes.ContainsKey($key)) { $sizes[$key] += [long]$f.Length }
+            else                          { $sizes[$key]  = [long]$f.Length }
+        }
+    }
+    catch { }   # 진단용이므로 부분 결과라도 그대로 쓴다
+
+    return @(
+        $sizes.GetEnumerator() |
+            Sort-Object -Property Value -Descending |
+            Select-Object -First $Top |
+            ForEach-Object { "$($_.Key) $([math]::Round($_.Value / 1MB, 1))MB" }
+    )
 }
 
 
@@ -222,13 +328,9 @@ function Remove-LPWorkDir {
 
     if (-not (Test-Path -LiteralPath $Path)) { return $true }
 
-    try {
-        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
-        return $true
-    }
-    catch {
-        Write-Host "경고: 평문 프로필 폴더를 지우지 못했습니다: $Path" -ForegroundColor Yellow
-        Write-Host '       재부팅하면 C: 드라이브가 초기화되므로 함께 사라집니다.' -ForegroundColor Yellow
-        return $false
-    }
+    if (-not (Remove-LPTree -Path $Path)) { return $true }
+
+    Write-Host "경고: 평문 프로필 폴더를 지우지 못했습니다: $Path" -ForegroundColor Yellow
+    Write-Host '       재부팅하면 C: 드라이브가 초기화되므로 함께 사라집니다.' -ForegroundColor Yellow
+    return $false
 }

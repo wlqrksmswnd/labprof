@@ -124,15 +124,16 @@ try {
     Write-Host "대상 프로필: $slotName" -ForegroundColor Cyan
     Write-Host ''
 
+    # 최소 자릿수 규칙은 없다. 빈 입력만 막는다 (에코가 없어 Enter 오타와 구분할 수 없다).
     $oldPw = Read-Host '기존 비밀번호' -AsSecureString
     if ($oldPw.Length -eq 0) {
-        Write-Host '비밀번호가 비어 있습니다. 중단합니다.' -ForegroundColor Red
+        Write-Host '아무것도 입력되지 않았습니다. 중단합니다.' -ForegroundColor Red
         exit 1
     }
 
     $new1 = Read-Host '새 비밀번호' -AsSecureString
     if ($new1.Length -eq 0) {
-        Write-Host '새 비밀번호가 비어 있습니다. 중단합니다.' -ForegroundColor Red
+        Write-Host '새 비밀번호에 아무것도 입력되지 않았습니다. 중단합니다.' -ForegroundColor Red
         exit 1
     }
     $new2 = Read-Host '새 비밀번호 확인' -AsSecureString
@@ -140,9 +141,6 @@ try {
     if (-not (Test-LPPasswordMatch $new1 $new2)) {
         Write-Host '두 비밀번호가 다릅니다. 아무것도 변경하지 않았습니다.' -ForegroundColor Red
         exit 1
-    }
-    if ($new1.Length -lt 12) {
-        Write-Host "경고: 새 비밀번호가 $($new1.Length)자입니다. 12자 이상을 권합니다." -ForegroundColor Yellow
     }
 
     if (Test-Path -LiteralPath $TmpPath) { Remove-Item -LiteralPath $TmpPath -Force }

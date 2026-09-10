@@ -89,6 +89,16 @@ Container format (`LP_HeaderSize` = 44):
 "LABPROF1"(8B) | iterations(4B, LE) | salt(16B) | iv(16B) | ciphertext | HMAC-SHA256(32B)
 ```
 
+`Protect-LPFile` computes that MAC **while writing**, by layering
+`CryptoStream($file, $hmac, Write)` under the encrypting `CryptoStream` (a `HashAlgorithm` is an
+`ICryptoTransform` whose `TransformBlock` copies input to output, so it tees). Do not "simplify" it
+back to writing the file and then re-reading it to hash — that computed the MAC from *bytes read
+back off disk*, so a byte corrupted during the write got a MAC stamped over it and the immediately
+following `Test-LPContainer` passed too (same bad byte, same MAC). Binding the MAC to the bytes we
+produced is what makes that verification a real round-trip check; it also removes one full read of
+the container per save. `$hmac.Hash` is only populated after `FlushFinalBlock`, i.e. after the
+streams are disposed — read it after, never before.
+
 ## Constraints that will bite you
 
 **Target runtime is Windows PowerShell 5.1 / .NET Framework 4.8** on a lab PC where PowerShell 7
@@ -125,6 +135,13 @@ product requirement documented in `README.md`; do not collapse it into one messa
 **Derive keys once per session.** PBKDF2 at 400,000 iterations costs ~1.7s. The open path derives a
 `KeySet` and the save path reuses it — same salt, fresh IV. Never re-derive to save.
 `Convert-ContainerPassword` is the one place that intentionally generates a new salt.
+
+**Do not lower `LP_Iterations` to make the open path faster.** It is 1.8s of a ~31s session (6%), so
+halving it buys 0.9s and halves the offline brute-force cost of a container copied off the shared
+`D:`. The 12-character minimum-password guidance was removed on request (2026-09-11), so short
+passwords can now actually arrive and the iteration count is the only remaining defense against
+them. The count lives in the header, so a future change stays backward-compatible — that makes it
+reversible, not a reason to do it.
 
 **The work dir is shared, so guard it before prompting.** `%LOCALAPPDATA%\Temp\lp` is used by
 whoever runs the script, so `lab-profile.ps1` does three things *before* slot selection and the
@@ -181,6 +198,12 @@ key). Do not build features that assume the answer.
 reopened Chrome still logged into Google. That PC is snapshot-restore, so the design holds there.
 This is one machine, not a property of the lab — any other seat or PC has to be measured the same
 way before relying on it (`CHECKLIST.md` ends with that instruction).
+
+**`PC18-18` (2026-09-10) is NOT measured.** The 2nd lab test ran there — four `start.bat` runs
+inside four minutes, containers opened and saved fine — but there was **no reboot between them and
+no `env-log.txt`**, so nothing about that PC's SID/DPAPI persistence was tested. Containers opening
+within one uninterrupted session is not evidence; the key never had a chance to change. Treat
+PC18-18 as unmeasured.
 
 Chrome 127+ also adds App-Bound Encryption (`app_bound_encrypted_key`, `v20` cookies), validated by
 the Elevation Service against the *calling binary's* path — not the profile path — so relocating the
